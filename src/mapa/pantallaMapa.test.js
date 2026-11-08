@@ -192,3 +192,56 @@ describe('ajuste de posición (5.4)', () => {
     expect(onMover).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('tamaño del contenedor (fallo visto en iPhone: teselas solo en una esquina)', () => {
+  function instalarResizeObserver() {
+    const instancias = [];
+    globalThis.ResizeObserver = class {
+      constructor(cb) { this.cb = cb; this.desconectado = false; instancias.push(this); }
+      observe() {}
+      disconnect() { this.desconectado = true; }
+    };
+    return instancias;
+  }
+
+  it('recalcula el mapa y encuadra los rodales cuando el contenedor pasa de 0 a su tamaño real', () => {
+    const observadores = instalarResizeObserver();
+    try {
+      const p = montar({ rodales: datos(), geo: null, enLinea: () => true });
+      expect(observadores).toHaveLength(1);
+      const mapa = p.mapa();
+      const invalidar = vi.spyOn(mapa, 'invalidateSize');
+      const encuadrar = vi.spyOn(mapa, 'fitBounds');
+
+      observadores[0].cb([{ contentRect: { width: 0 } }]); // aún sin tamaño: no encuadra
+      expect(invalidar).toHaveBeenCalledTimes(1);
+      expect(encuadrar).not.toHaveBeenCalled();
+
+      observadores[0].cb([{ contentRect: { width: 360 } }]); // ya tiene tamaño
+      expect(invalidar).toHaveBeenCalledTimes(2);
+      expect(encuadrar).toHaveBeenCalledTimes(1);
+
+      observadores[0].cb([{ contentRect: { width: 400 } }]); // girar el móvil: recalcula, no reencuadra
+      expect(invalidar).toHaveBeenCalledTimes(3);
+      expect(encuadrar).toHaveBeenCalledTimes(1);
+    } finally {
+      delete globalThis.ResizeObserver;
+    }
+  });
+
+  it('deja de observar al destruir la pantalla', () => {
+    const observadores = instalarResizeObserver();
+    try {
+      const p = montar({ rodales: datos(), geo: null, enLinea: () => true });
+      p.destruir();
+      expect(observadores[0].desconectado).toBe(true);
+    } finally {
+      delete globalThis.ResizeObserver;
+    }
+  });
+
+  it('sin ResizeObserver (entorno antiguo) no falla', () => {
+    expect(globalThis.ResizeObserver).toBeUndefined();
+    expect(() => montar({ rodales: datos(), geo: null, enLinea: () => true })).not.toThrow();
+  });
+});

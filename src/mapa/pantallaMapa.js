@@ -37,6 +37,8 @@ export function pantallaMapa({
   let tesFallidas = 0;
   let mapaDisponible = enLinea();
   let destruido = false;
+  let encuadrado = false;
+  let observador = null;
 
   const aviso = el('p', { class: 'aviso', role: 'status' });
   const contenedorMapa = el('div', { class: 'mapa', style: 'height: 60vh;' });
@@ -106,6 +108,23 @@ export function pantallaMapa({
     capaMarcadores = L.layerGroup().addTo(mapa);
     pintarMarcadores();
     encuadrar();
+    vigilarTamano();
+  }
+
+  // El contenedor puede medir 0 al crear el mapa (aún no está en el DOM) o cambiar después
+  // (girar el móvil, aparecer avisos). Sin esto Leaflet pinta teselas solo en una esquina.
+  function vigilarTamano() {
+    if (observador || typeof ResizeObserver === 'undefined') return;
+    observador = new ResizeObserver((entradas) => {
+      if (!mapa || destruido) return;
+      mapa.invalidateSize();
+      const ancho = entradas[entradas.length - 1]?.contentRect?.width ?? 0;
+      if (!encuadrado && ancho > 0) {
+        encuadrado = true;
+        encuadrar(); // el primer encuadre se calculó con tamaño 0
+      }
+    });
+    observador.observe(contenedorMapa);
   }
 
   function pintarMarcadores() {
@@ -197,6 +216,8 @@ export function pantallaMapa({
     ventana?.removeEventListener('online', alCambiarRed);
     ventana?.removeEventListener('offline', alCambiarRed);
     if (idWatch != null) geo?.clearWatch(idWatch);
+    observador?.disconnect();
+    observador = null;
     mapa?.remove();
     mapa = null;
   };
