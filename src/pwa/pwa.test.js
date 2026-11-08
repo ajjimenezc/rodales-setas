@@ -44,12 +44,12 @@ describe('almacenamiento persistente (7.3)', () => {
     expect(await solicitarPersistencia(a, nav)).toBe(false);
   });
 
-  it('no pisa otros ajustes (sal, verificador...)', async () => {
+  it('no pisa otros ajustes (p. ej. la fecha de última exportación)', async () => {
     const a = await almacen();
-    await a.guardarAjustes({ sal: 's', iteraciones: 1, verificador: { iv: 'i', datos: 'd' } });
+    await a.actualizarAjustes({ ultimaExportacion: '2026-11-08T10:00:00.000Z' });
     await solicitarPersistencia(a, { storage: { persist: async () => true } });
     const aj = await a.leerAjustes();
-    expect(aj.sal).toBe('s');
+    expect(aj.ultimaExportacion).toBe('2026-11-08T10:00:00.000Z');
     expect(aj.persistenciaConcedida).toBe(true);
   });
 });

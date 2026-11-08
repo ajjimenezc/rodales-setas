@@ -2,65 +2,61 @@
 
 ## Context
 
-Proyecto nuevo sin código. La motivación y el alcance están en `proposal.md` y los requisitos en `specs/`. Restricciones que condicionan el enfoque:
+Proyecto nuevo. La motivación y el alcance están en `proposal.md` y los requisitos en `specs/`. Restricciones que condicionan el enfoque:
 
 - Hosting estático gratuito (GitHub Pages): sin backend, sin secretos en servidor, repositorio público.
 - Dispositivo objetivo: iPhone con la PWA instalada. Safari tiene particularidades: el almacenamiento de la PWA instalada está aislado del de Safari, puede purgar datos de webs no instaladas y la geolocalización puede volver a pedir permiso en modo standalone.
-- La geolocalización y WebCrypto exigen contexto seguro; GitHub Pages sirve por HTTPS.
+- La geolocalización exige contexto seguro; GitHub Pages sirve por HTTPS.
 - Sin cobertura en el monte: la captura no puede depender de la red.
+- Uso personal en un único dispositivo: no hay contraseña de app ni cifrado de datos (decisión del usuario, ver D4).
 
 ## Goals / Non-Goals
 
 **Goals:**
 - Captura de un rodal en pocos toques con una mano, sin depender de la red.
-- Datos ilegibles en el dispositivo sin la contraseña.
+- Los datos viven solo en el dispositivo: sin cuentas, sin servidor y sin peticiones que los contengan.
 - Mantenimiento mínimo: sin servidor, con pocas dependencias y despliegue automático.
 
 **Non-Goals:**
-- Proteger frente a un atacante que ya controla el dispositivo desbloqueado con la app abierta.
-- Recuperar datos si se pierde la contraseña.
+- Proteger los datos frente a quien tenga el iPhone desbloqueado o acceda a su almacenamiento: no hay contraseña de la app ni cifrado.
+- Cifrar el archivo de copia de seguridad.
 - Mapa offline, fotos, sincronización o multiusuario.
 
 ## Decisions
 
 ### D1. Vite con JavaScript sin framework (módulos ES)
-Vite da dev server, build con `base` configurable para la subruta de Pages y un plugin PWA. La UI son pocas pantallas (bloqueo, lista, formulario, mapa, ajustes) que no justifican un framework.
+Vite da dev server, build con `base` configurable para la subruta de Pages y un plugin PWA. La UI son pocas pantallas (lista, formulario, mapa, copia) que no justifican un framework.
 - Alternativa: HTML y JS sin build. Más simple, pero el service worker con precache y el `base` se vuelven manuales y propensos a errores.
-- Alternativa: React o Svelte. Más estructura de la necesaria para cinco pantallas; mayor peso y superficie de dependencias.
+- Alternativa: React o Svelte. Más estructura de la necesaria para pocas pantallas; mayor peso y superficie de dependencias.
 
 ### D2. Leaflet para el mapa, con teselas de OpenStreetMap
 Leaflet es pequeño, estable y suficiente para marcadores y arrastre. Basta con teselas raster bajo demanda, y el mapa online ya fue aceptado como alcance de v1.
 - Alternativa: MapLibre GL. Mejor para mapas vectoriales y futuro mapa offline (PMTiles), pero más pesado y necesita WebGL. Si en el futuro se añade mapa offline se reevaluará.
 - Teselas: la política de uso de OSM permite uso ligero bajo demanda con atribución, pero no la descarga masiva. Es válido para uso personal; si crece el uso se cambiará a un proveedor con clave.
 - Ninguna petición lleva datos de rodales; solo las coordenadas de las teselas visibles.
+- El contenedor del mapa se observa con `ResizeObserver`: el mapa se crea antes de que el nodo esté en el DOM y Leaflet mediría 0×0 (teselas solo en una esquina).
 
 ### D3. IndexedDB con una capa fina de acceso (`idb`)
-Los datos viven en IndexedDB, más robusta y con más cuota que `localStorage`, y accesible desde el service worker si hiciera falta.
+Los datos viven en IndexedDB, más robusta y con más cuota que `localStorage`. Los rodales se guardan **en claro**, un registro por rodal con su `id` como clave.
 - Alternativa: `localStorage`. Síncrono, límite pequeño y más fácil de purgar.
+- El esquema lleva número de versión. La versión 2 (esta) elimina los almacenes cifrados de las versiones de prueba, ver Migration Plan.
 
-### D4. Cifrado con WebCrypto: PBKDF2 y AES-GCM
-```
- contraseña --PBKDF2(sal, N iteraciones)--> clave AES-GCM 256 (en memoria)
-                                                  |
- rodal (JSON) --AES-GCM(IV aleatorio)--> {iv, ciphertext} --> IndexedDB
-```
-- La sal se guarda en claro junto a un «verificador»: un valor conocido cifrado con la clave. Descifrarlo comprueba la contraseña sin guardarla.
-- Un registro cifrado por rodal, cada uno con su IV aleatorio de 12 bytes. Así se guarda y se edita sin re-cifrar todo.
-- Iteraciones de PBKDF2: lo más alto que dé un arranque tolerable en iPhone (objetivo del orden de 600 000 con SHA-256, a medir en el dispositivo).
-- La clave solo existe en memoria como `CryptoKey` no extraíble; se descarta al bloquear.
-- Alternativa: Argon2 por WASM. Mejor resistencia, pero añade una dependencia y complejidad para un caso con un único usuario y un atacante que ya tiene el dispositivo físico. Se deja como mejora posible.
-- Alternativa: solo pantalla de contraseña sin cifrado. Descartada: el código es público y los datos serían legibles desde las herramientas del navegador.
-- El texto de especies para autocompletado se deriva de los rodales descifrados en memoria, nunca se guarda en claro.
+### D4. Sin contraseña ni cifrado
+La app abre directamente y guarda los rodales en claro. Decisión del usuario: es de uso personal, en un único iPhone, y la protección frente a terceros es la del propio móvil (código o Face ID).
+- La versión inicial del diseño cifraba con PBKDF2 y AES-GCM y pedía contraseña al arrancar. Se retira entera: pantalla de contraseña, derivación de clave, verificador, bloqueo manual y por inactividad, y cambio de contraseña.
+- Alternativa descartada: cifrado «transparente» con una clave aleatoria guardada en el propio navegador. La clave estaría junto a los datos, así que daría una falsa sensación de protección.
+- Alternativa descartada: mantener contraseña opcional. Más código y más estados (primer uso, bloqueo, cambio) para un caso de uso personal.
+- Consecuencia asumida: quien use el iPhone desbloqueado, o acceda a su copia de seguridad del sistema, puede ver los rodales.
+- Se elimina el riesgo de perder los datos por olvidar la contraseña.
 
 ### D5. Formato de la copia de seguridad
-Un archivo JSON con `{version, sal, iteraciones, iv, datos}`, donde `datos` es el conjunto de rodales cifrado con AES-GCM. La clave se deriva de la contraseña actual con su propia sal.
+Un archivo JSON legible `{formato, version, exportadoEn, rodales}`. Sin cifrado ni contraseña.
 - Cada rodal tiene un `id` UUID generado al crearlo. La fusión al importar es por `id`; ante un mismo `id`, gana el de `actualizadoEn` más reciente.
-- El campo `version` permite evolucionar el formato.
-- Exportar usa `navigator.share({files})` si `canShare` lo permite y, si no, descarga mediante enlace temporal.
-- Se cifra con la clave de la app ya derivada y en memoria; el archivo lleva la sal y las iteraciones de la app para poder derivar la misma clave al importar. Así «Exportar» abre la hoja de compartir sin volver a pedir la contraseña (decisión tomada en la implementación; sustituye a la idea inicial de una sal propia por exportación).
-- La contraseña del archivo es la de la app en el momento de exportar. Al importar se pide por si cambió después.
-- Al importar se valida todo (formato, descifrado y cada rodal) antes de escribir, y la escritura es una única transacción.
-- El archivo se llama `rodales-AAAA-MM-DD.json` y está en `.gitignore`.
+- `formato` identifica el archivo; `version` es 2 porque la versión 1 estaba cifrada. Al importar, una copia con otra versión (incluida la 1, cifrada) se rechaza como no compatible sin tocar los datos.
+- Exportar usa `navigator.share({files})` si `canShare` lo permite y, si no, descarga mediante enlace temporal. Cerrar la hoja de compartir no cuenta como exportación.
+- Al importar se valida todo (formato y cada rodal) antes de escribir, y la escritura es una única transacción.
+- La pantalla de copia avisa de que el archivo no está cifrado y de que no debe publicarse.
+- El archivo se llama `rodales-AAAA-MM-DD.json` y está en `.gitignore`; el CI además falla si hay copias versionadas.
 
 ### D6. Modelo de datos
 ```
@@ -72,9 +68,9 @@ Rodal {
   especies: string[]   // al menos una
   notas: string
 }
-Ajustes (en claro): { sal, iteraciones, verificador, ultimaExportacion, persistenciaConcedida }
+Ajustes: { ultimaExportacion, persistenciaConcedida }
 ```
-Solo el contenido de los rodales va cifrado. Los ajustes no contienen datos sensibles. `ultimaExportacion` se guarda sin cifrar por simplicidad.
+Todo se guarda en claro. El texto de especies para autocompletado se deriva de los rodales guardados.
 
 ### D7. Captura de ubicación
 `watchPosition` con alta precisión mientras el formulario está abierto: se muestra la mejor lectura y se mejora hasta que la precisión sea aceptable o el usuario guarde. Se limpia el `watch` al cerrar. Si falla, se ofrece entrada manual.
@@ -85,35 +81,33 @@ Solo el contenido de los rodales va cifrado. Los ajustes no contienen datos sens
 Distancia por fórmula de Haversine y rumbo inicial calculado con las coordenadas, ordenados por cercanía. No requiere red. Sin posición, solo se muestran las coordenadas.
 
 ### D9. Service worker y persistencia
-Precache del shell de la aplicación mediante el plugin PWA de Vite (Workbox) con estrategia de actualización que avisa al usuario. Las teselas no se precachean en v1; se pueden mantener en caché de ejecución limitada para reducir peticiones repetidas, sin garantías de offline.
-- `navigator.storage.persist()` tras el primer desbloqueo, registrando el resultado.
+Precache del shell de la aplicación mediante el plugin PWA de Vite (Workbox) con estrategia de actualización que avisa al usuario. Las teselas no se cachean: guardarlas dejaría en el dispositivo un rastro de las zonas consultadas.
+- `navigator.storage.persist()` al arrancar la app, registrando el resultado.
 - Detección de modo standalone por `navigator.standalone` y `display-mode` para el aviso de iOS.
 
-### D10. Bloqueo por inactividad
-`visibilitychange`: al pasar a segundo plano se guarda la hora; al volver, si han pasado más de 5 minutos, se descarta la clave y se vuelve a la pantalla de contraseña.
+### D10. Despliegue
+Workflow de GitHub Actions: instalar dependencias, probar, `vite build` con `base` igual al nombre del repositorio y publicación con `actions/deploy-pages`. Repositorio público; `.gitignore` excluye las copias de seguridad (`rodales-*.json`, `*.rodales`) y el workflow falla si alguna está versionada, porque ahora son legibles.
 
-### D11. Despliegue
-Workflow de GitHub Actions: instalar dependencias, `vite build` con `base` igual al nombre del repositorio y publicación con `actions/deploy-pages`. Repositorio público; `.gitignore` excluye exportaciones locales (`*.rodales`) por seguridad.
-
-### D12. Pruebas
-Pruebas unitarias con Vitest de las partes puras: cifrado y descifrado, fusión de importación, Haversine y rumbo, validación del formulario. IndexedDB se prueba con `fake-indexeddb`. La verificación en iPhone (geolocalización, instalación, compartir) es manual y está listada en las tareas.
+### D11. Pruebas
+Pruebas unitarias con Vitest de las partes puras: fusión de importación, Haversine y rumbo, validación del formulario y del archivo de copia. IndexedDB se prueba con `fake-indexeddb`. La verificación en iPhone (geolocalización, instalación, compartir) es manual y está listada en las tareas.
 
 ## Risks / Trade-offs
 
-- **Olvidar la contraseña pierde los datos** → Advertencia clara al crearla, copia de seguridad cifrada recomendada y recordatorio a los 30 días.
+- **Quien use el iPhone desbloqueado ve todos los rodales** → Aceptado por el usuario; la protección es el código o Face ID del móvil. El README lo dice con claridad.
+- **El archivo de copia es legible y puede acabar en un sitio público** → Aviso en la pantalla de copia, `.gitignore` y comprobación en el CI para que no se versione.
+- **Los datos quedan en claro en el almacenamiento del navegador y en las copias de seguridad del sistema del iPhone** → Aceptado; no hay mitigación técnica sin cifrado.
 - **iOS purga el almacenamiento o los datos quedan en Safari y no en la app instalada** → Aviso en Safari, `persist()`, instrucciones de instalación antes del primer rodal y exportación sencilla.
 - **GPS impreciso bajo arbolado** → Mostrar y guardar la precisión, avisar si es mala y permitir ajustar el punto en el mapa.
-- **PBKDF2 es menos resistente que Argon2 frente a ataques con GPU** → Contraseña robusta recomendada y número alto de iteraciones; Argon2 queda como mejora futura.
-- **La contraseña con pocos caracteres es vulnerable a fuerza bruta sobre una copia exportada** → Exigir una longitud mínima de 8 caracteres y avisar de que la copia exportada se protege solo por ella.
 - **Las teselas de OSM revelan al proveedor la zona consultada** → Aceptado en v1 y documentado; los rodales no se envían.
-- **Código público** → El cifrado no depende del secreto del código, y el repositorio nunca contiene datos.
+- **Código público** → El repositorio nunca contiene datos ni copias de seguridad.
 - **Re-solicitud de permiso de ubicación en standalone** → Se prueba en el dispositivo y se explica en la interfaz; sin solución técnica propia.
 
 ## Migration Plan
 
-No hay datos previos que migrar. Despliegue inicial: crear el repositorio público, activar Pages con origen «GitHub Actions» y hacer el primer push. Retroceso: volver a desplegar el commit anterior; los datos locales no dependen del servidor. El campo `version` en la copia y un número de versión del esquema de IndexedDB permiten migraciones futuras.
+Los datos de las versiones de prueba anteriores (cifrados con contraseña) se descartan sin migrar: el usuario confirmó que eran solo pruebas. El esquema de IndexedDB sube a la versión 2 y, al actualizar, se vacían los almacenes antiguos para que la app arranque limpia sin pedir contraseña. Una copia cifrada generada por la versión anterior no se puede importar.
+
+Despliegue: push a la rama principal y el workflow publica. Retroceso: volver a desplegar el commit anterior; los datos locales no dependen del servidor. El campo `version` en la copia y el número de versión del esquema de IndexedDB permiten migraciones futuras.
 
 ## Open Questions
 
-- Nombre del repositorio y, por tanto, la subruta de Pages (afecta solo a la configuración de `base`).
 - Idioma de la interfaz: se asume español.

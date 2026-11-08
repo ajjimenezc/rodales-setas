@@ -1,6 +1,6 @@
 import { el } from './dom.js';
 import { formatearFecha } from './formato.js';
-import { CopiaInvalida, ContrasenaCopiaIncorrecta } from '../copia/copia.js';
+import { CopiaInvalida } from '../copia/copia.js';
 
 const MENSAJES_EXPORT = {
   compartido: 'Copia enviada a la hoja de compartir. Comprueba que se ha guardado.',
@@ -9,22 +9,16 @@ const MENSAJES_EXPORT = {
 };
 
 // onExportar() -> 'compartido' | 'descargado' | 'cancelado'
-// onImportar(texto, contrasena) -> { anadidos, actualizados, total } (lanza CopiaInvalida / ContrasenaCopiaIncorrecta)
+// onImportar(texto) -> { anadidos, actualizados, total } (lanza CopiaInvalida si el archivo no vale)
 export function pantallaCopia({ ultimaExportacion, leerUltimaExportacion, onExportar, onImportar, onVolver }) {
   const textoUltima = (iso) => (iso ? `Última copia: ${formatearFecha(iso)}` : 'Aún no has exportado ninguna copia.');
   const ultima = el('p', { class: 'ultima' }, textoUltima(ultimaExportacion));
   const estado = el('p', { role: 'status', 'aria-live': 'polite' });
   const error = el('p', { class: 'error', role: 'alert' });
   const archivoIn = el('input', { type: 'file', name: 'archivo', accept: '.json,application/json' });
-  const pwIn = el('input', { type: 'password', name: 'contrasena-copia', autocomplete: 'off' });
 
   const alerta = (e) => {
-    error.textContent =
-      e instanceof ContrasenaCopiaIncorrecta
-        ? 'La contraseña no corresponde a esta copia. Usa la que tenías al exportarla.'
-        : e instanceof CopiaInvalida
-          ? e.message
-          : 'No se pudo completar la operación.';
+    error.textContent = e instanceof CopiaInvalida ? e.message : 'No se pudo completar la operación.';
   };
 
   return el(
@@ -35,6 +29,12 @@ export function pantallaCopia({ ultimaExportacion, leerUltimaExportacion, onExpo
       'p',
       { class: 'aviso' },
       'Tus rodales solo existen en este dispositivo. Si lo pierdes o se borran los datos del navegador, sin copia no se pueden recuperar.',
+    ),
+    el(
+      'p',
+      { class: 'aviso aviso-sin-cifrar', role: 'note' },
+      el('strong', {}, 'El archivo de copia no está cifrado. '),
+      'Quien lo reciba verá la ubicación de tus rodales. No lo publiques ni lo guardes en sitios públicos.',
     ),
     ultima,
     el(
@@ -54,11 +54,10 @@ export function pantallaCopia({ ultimaExportacion, leerUltimaExportacion, onExpo
           }
         },
       },
-      'Exportar copia cifrada',
+      'Exportar copia',
     ),
     el('h2', {}, 'Importar copia'),
     el('label', {}, 'Archivo de copia', archivoIn),
-    el('label', {}, 'Contraseña con la que se exportó', pwIn),
     el(
       'button',
       {
@@ -73,9 +72,8 @@ export function pantallaCopia({ ultimaExportacion, leerUltimaExportacion, onExpo
             return;
           }
           try {
-            const r = await onImportar(await archivo.text(), pwIn.value);
+            const r = await onImportar(await archivo.text());
             estado.textContent = `Importación completada: ${r.anadidos} nuevos, ${r.actualizados} actualizados (${r.total} en la copia).`;
-            pwIn.value = '';
           } catch (e) {
             alerta(e);
           }

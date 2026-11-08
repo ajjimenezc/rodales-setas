@@ -30,7 +30,7 @@ El sistema SHALL cargar la interfaz completa sin conexión una vez visitada con 
 El sistema SHALL solicitar almacenamiento persistente al navegador cuando esté disponible.
 
 #### Scenario: Solicitud de persistencia
-- **WHEN** el usuario desbloquea la app por primera vez
+- **WHEN** el usuario abre la app por primera vez
 - **THEN** el sistema solicita almacenamiento persistente y registra si se ha concedido
 
 #### Scenario: Persistencia no concedida
@@ -62,8 +62,8 @@ El sistema SHALL publicarse como sitio estático en GitHub Pages mediante un des
 - **THEN** el manifiesto, el service worker y los recursos cargan correctamente
 
 ### Requirement: Sin datos de usuario en el repositorio
-El sistema MUST NOT incluir en el código fuente ni en los artefactos publicados ningún dato de rodales, contraseñas ni claves.
+El sistema MUST NOT incluir en el código fuente ni en los artefactos publicados ningún dato de rodales, archivo de copia de seguridad, credencial ni clave de acceso.
 
 #### Scenario: Revisión del repositorio
 - **WHEN** se revisa el repositorio público y el sitio publicado
-- **THEN** no contienen rodales, coordenadas de usuario, contraseñas ni claves
+- **THEN** no contienen rodales, coordenadas de usuario, copias de seguridad, credenciales ni claves de acceso

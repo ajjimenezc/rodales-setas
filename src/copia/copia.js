@@ -1,11 +1,8 @@
-// Copia de seguridad: archivo JSON { formato, version, sal, iteraciones, iv, datos }.
-// `datos` es { exportadoEn, rodales } cifrado con AES-GCM. Se usa la clave de la app (en memoria),
-// cuya sal e iteraciones van en el archivo; al importar se pide la contraseña con la que se exportó.
-import { cifrar, descifrar, derivarClave } from '../crypto/cifrado.js';
+// Copia de seguridad: archivo JSON legible { formato, version, exportadoEn, rodales }.
+// NO está cifrado: quien reciba el archivo verá los rodales.
 
 export const FORMATO = 'rodales-copia';
-export const VERSION = 1;
-const MAX_ITERACIONES = 5_000_000; // evita archivos maliciosos que bloqueen el dispositivo
+export const VERSION = 2; // la 1 era una copia cifrada con contraseña, ya no compatible
 const DIAS_AVISO = 30;
 const MS_DIA = 24 * 60 * 60 * 1000;
 
@@ -15,17 +12,10 @@ export class CopiaInvalida extends Error {
     this.name = 'CopiaInvalida';
   }
 }
-export class ContrasenaCopiaIncorrecta extends Error {
-  constructor() {
-    super('La contraseña no corresponde a esta copia');
-    this.name = 'ContrasenaCopiaIncorrecta';
-  }
-}
 
 // --- exportar ---------------------------------------------------------------
-export async function generarCopia(clave, ajustes, rodales, ahora = () => new Date()) {
-  const { iv, datos } = await cifrar(clave, { exportadoEn: ahora().toISOString(), rodales });
-  return JSON.stringify({ formato: FORMATO, version: VERSION, sal: ajustes.sal, iteraciones: ajustes.iteraciones, iv, datos });
+export function generarCopia(rodales, ahora = () => new Date()) {
+  return JSON.stringify({ formato: FORMATO, version: VERSION, exportadoEn: ahora().toISOString(), rodales }, null, 2);
 }
 
 export function nombreArchivo(ahora = () => new Date()) {
@@ -56,26 +46,16 @@ export async function entregarArchivo(texto, nombre, { nav = globalThis.navigato
   return 'descargado';
 }
 
+export async function exportarCopia(almacen, { nav, doc, url, ahora = () => new Date() } = {}) {
+  const rodales = await almacen.listarRodales();
+  const resultado = await entregarArchivo(generarCopia(rodales, ahora), nombreArchivo(ahora), { nav, doc, url });
+  if (resultado !== 'cancelado') await almacen.actualizarAjustes({ ultimaExportacion: ahora().toISOString() });
+  return resultado;
+}
+
 // --- importar ---------------------------------------------------------------
 const esTexto = (v) => typeof v === 'string' && v.length > 0;
 const esFecha = (v) => typeof v === 'string' && !Number.isNaN(Date.parse(v));
-
-// Valida el formato SIN descifrar. Lanza CopiaInvalida.
-export function leerCopia(texto) {
-  let c;
-  try {
-    c = JSON.parse(texto);
-  } catch {
-    throw new CopiaInvalida('El archivo no es una copia válida.');
-  }
-  if (!c || typeof c !== 'object' || c.formato !== FORMATO) throw new CopiaInvalida('El archivo no es una copia de rodales.');
-  if (c.version !== VERSION) throw new CopiaInvalida('La versión de la copia no es compatible.');
-  if (![c.sal, c.iv, c.datos].every(esTexto)) throw new CopiaInvalida('La copia está incompleta.');
-  if (!Number.isInteger(c.iteraciones) || c.iteraciones < 1 || c.iteraciones > MAX_ITERACIONES) {
-    throw new CopiaInvalida('La copia tiene parámetros no válidos.');
-  }
-  return c;
-}
 
 function validarRodal(r) {
   const ok =
@@ -94,18 +74,21 @@ function validarRodal(r) {
   };
 }
 
-// Descifra y valida. No toca ningún dato existente. Devuelve { rodales, exportadoEn }.
-export async function abrirCopia(texto, contrasena) {
-  const c = leerCopia(texto);
-  const clave = await derivarClave(contrasena, c.sal, c.iteraciones);
-  let contenido;
+// Valida el archivo completo SIN tocar ningún dato. Lanza CopiaInvalida. Devuelve { rodales, exportadoEn }.
+export function leerCopia(texto) {
+  let c;
   try {
-    contenido = await descifrar(clave, { iv: c.iv, datos: c.datos });
+    c = JSON.parse(texto);
   } catch {
-    throw new ContrasenaCopiaIncorrecta();
+    throw new CopiaInvalida('El archivo no es una copia válida.');
   }
-  if (!contenido || !Array.isArray(contenido.rodales)) throw new CopiaInvalida('La copia no contiene rodales.');
-  return { rodales: contenido.rodales.map(validarRodal), exportadoEn: contenido.exportadoEn ?? null };
+  if (!c || typeof c !== 'object' || c.formato !== FORMATO) throw new CopiaInvalida('El archivo no es una copia de rodales.');
+  if (c.version === 1) {
+    throw new CopiaInvalida('Esta copia está cifrada y la generó una versión anterior de la app. El formato no es compatible.');
+  }
+  if (c.version !== VERSION) throw new CopiaInvalida('La versión de la copia no es compatible.');
+  if (!Array.isArray(c.rodales)) throw new CopiaInvalida('La copia no contiene rodales.');
+  return { rodales: c.rodales.map(validarRodal), exportadoEn: c.exportadoEn ?? null };
 }
 
 // Fusión por id; si coincide, gana el más reciente (actualizadoEn). Empate: se conserva el existente.
@@ -127,21 +110,12 @@ export function fusionar(existentes, importados) {
   return { aEscribir, anadidos, actualizados };
 }
 
-export async function importarCopia(almacen, clave, texto, contrasena) {
-  const { rodales } = await abrirCopia(texto, contrasena); // valida todo antes de tocar nada
-  const existentes = await almacen.listarRodales(clave);
+export async function importarCopia(almacen, texto) {
+  const { rodales } = leerCopia(texto); // valida todo antes de tocar nada
+  const existentes = await almacen.listarRodales();
   const { aEscribir, anadidos, actualizados } = fusionar(existentes, rodales);
-  if (aEscribir.length > 0) await almacen.guardarVarios(clave, aEscribir);
+  if (aEscribir.length > 0) await almacen.guardarVarios(aEscribir);
   return { anadidos, actualizados, total: rodales.length };
-}
-
-export async function exportarCopia(almacen, clave, { nav, doc, url, ahora = () => new Date() } = {}) {
-  const ajustes = await almacen.leerAjustes();
-  const rodales = await almacen.listarRodales(clave);
-  const texto = await generarCopia(clave, ajustes, rodales, ahora);
-  const resultado = await entregarArchivo(texto, nombreArchivo(ahora), { nav, doc, url });
-  if (resultado !== 'cancelado') await almacen.actualizarAjustes({ ultimaExportacion: ahora().toISOString() });
-  return resultado;
 }
 
 // --- recordatorio -----------------------------------------------------------

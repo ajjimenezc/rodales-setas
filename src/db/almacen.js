@@ -1,16 +1,20 @@
-// Capa IndexedDB. Los rodales se guardan SIEMPRE cifrados: { id, iv, datos }.
-// Los ajustes (sal, iteraciones, verificador...) no contienen datos sensibles.
+// Capa IndexedDB. Los rodales se guardan en claro, un registro por rodal con su `id` como clave.
+// La protección de los datos es la del propio dispositivo (no hay contraseña ni cifrado).
 import { openDB } from 'idb';
-import { cifrar, descifrar } from '../crypto/cifrado.js';
 
-const VERSION_ESQUEMA = 1;
+// v2: sin cifrado. Al actualizar desde la v1 (rodales cifrados con contraseña, solo de pruebas)
+// se vacían los almacenes antiguos y la app arranca limpia.
+export const VERSION_ESQUEMA = 2;
 const CLAVE_AJUSTES = 'principal';
 
 export async function abrirAlmacen(nombre = 'rodales-db') {
   const db = await openDB(nombre, VERSION_ESQUEMA, {
-    upgrade(db) {
-      db.createObjectStore('ajustes');
-      db.createObjectStore('rodales', { keyPath: 'id' });
+    upgrade(db, versionAnterior) {
+      if (versionAnterior < 2) {
+        for (const existente of [...db.objectStoreNames]) db.deleteObjectStore(existente);
+        db.createObjectStore('ajustes');
+        db.createObjectStore('rodales', { keyPath: 'id' });
+      }
     },
   });
 
@@ -21,10 +25,7 @@ export async function abrirAlmacen(nombre = 'rodales-db') {
       return (await db.get('ajustes', CLAVE_AJUSTES)) ?? null;
     },
 
-    async guardarAjustes(ajustes) {
-      await db.put('ajustes', ajustes, CLAVE_AJUSTES);
-    },
-
+    // Fusiona `parcial` con los ajustes actuales en una transacción.
     async actualizarAjustes(parcial) {
       const tx = db.transaction('ajustes', 'readwrite');
       const actuales = (await tx.store.get(CLAVE_AJUSTES)) ?? {};
@@ -32,29 +33,30 @@ export async function abrirAlmacen(nombre = 'rodales-db') {
       await tx.done;
     },
 
-    async guardarRodal(clave, rodal) {
-      const { iv, datos } = await cifrar(clave, rodal);
-      await db.put('rodales', { id: rodal.id, iv, datos });
+    async guardarRodal(rodal) {
+      await db.put('rodales', rodal);
     },
 
-    // Guarda varios rodales en una única transacción (todo o nada). Cifra antes de abrirla.
-    async guardarVarios(clave, rodales) {
-      const registros = await Promise.all(
-        rodales.map(async (r) => ({ id: r.id, ...(await cifrar(clave, r)) })),
-      );
+    // Guarda varios rodales en una única transacción: o se guardan todos o ninguno.
+    async guardarVarios(rodales) {
       const tx = db.transaction('rodales', 'readwrite');
-      for (const reg of registros) await tx.store.put(reg);
+      try {
+        for (const r of rodales) await tx.store.put(r);
+      } catch (e) {
+        // Si un put lanza, IndexedDB confirmaría igualmente los anteriores: se aborta para no dejar datos a medias.
+        tx.abort();
+        await tx.done.catch(() => {});
+        throw e;
+      }
       await tx.done;
     },
 
-    async leerRodal(clave, id) {
-      const reg = await db.get('rodales', id);
-      return reg ? descifrar(clave, reg) : null;
+    async leerRodal(id) {
+      return (await db.get('rodales', id)) ?? null;
     },
 
-    async listarRodales(clave) {
-      const registros = await db.getAll('rodales');
-      return Promise.all(registros.map((r) => descifrar(clave, r)));
+    async listarRodales() {
+      return db.getAll('rodales');
     },
 
     async borrarRodal(id) {
@@ -63,21 +65,6 @@ export async function abrirAlmacen(nombre = 'rodales-db') {
 
     async contarRodales() {
       return db.count('rodales');
-    },
-
-    // Acceso a los registros cifrados en bruto (para pruebas y re-cifrado).
-    async registrosBrutos() {
-      return db.getAll('rodales');
-    },
-
-    // Sustituye ajustes y todos los registros en UNA transacción: o se aplica todo o nada.
-    async reemplazarTodo(ajustes, registros) {
-      const tx = db.transaction(['ajustes', 'rodales'], 'readwrite');
-      await tx.objectStore('ajustes').put(ajustes, CLAVE_AJUSTES);
-      const almacenRodales = tx.objectStore('rodales');
-      await almacenRodales.clear();
-      for (const r of registros) await almacenRodales.put(r);
-      await tx.done;
     },
 
     cerrar() {
