@@ -1,0 +1,58 @@
+name: Desplegar en GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # El repositorio es público: ninguna copia de seguridad ni dato de rodales debe estar versionado.
+      - name: Comprobar que no hay datos de usuario en el repositorio
+        run: |
+          if git ls-files | grep -E '(^|/)rodales-.*\.json$|\.rodales$'; then
+            echo "::error::Hay archivos de copia de seguridad versionados. Bórralos del repositorio."
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+
+      - name: Construir
+        run: npm run build
+        env:
+          # Pages sirve el sitio en /<repositorio>/. Para un repo «usuario.github.io» usa BASE_PATH: /
+          BASE_PATH: /${{ github.event.repository.name }}/
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
